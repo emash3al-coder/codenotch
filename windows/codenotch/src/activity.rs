@@ -651,6 +651,9 @@ pub fn start(app: AppHandle) {
                     *st.activity.lock().unwrap() = found.clone();
                 }
                 let _ = app.emit("activity", &found);
+                if found.iter().any(|a| a.state == "waiting") {
+                    crate::reveal_attention(&app);
+                }
             }
             std::thread::sleep(INTERVAL);
         }

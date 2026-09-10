@@ -49,6 +49,15 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
     let auto = CheckMenuItemBuilder::with_id("autostart", tr(lang, "autostart"))
         .checked(crate::autostart::is_enabled())
         .build(app)?;
+    let auto_hide = {
+        let enabled = app.state::<crate::AppState>().cfg.lock().unwrap().auto_hide_notch;
+        CheckMenuItemBuilder::with_id(
+            "auto-hide-notch",
+            format!("Auto-hide notch: {}", if enabled { "On" } else { "Off" }),
+        )
+        .checked(enabled)
+        .build(app)?
+    };
     let quit = MenuItemBuilder::with_id("quit", tr(lang, "quit")).build(app)?;
     MenuBuilder::new(app)
         .items(&[&install, &uninstall])
@@ -58,6 +67,7 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
         .item(&reset)
         .item(&open_data)
         .item(&auto)
+        .item(&auto_hide)
         .separator()
         .item(&quit)
         .build()
@@ -114,6 +124,10 @@ fn handle(app: &AppHandle, id: &str) {
             };
             notice(app, r);
             refresh_menu(app); // refresh the check marks
+        }
+        "auto-hide-notch" => {
+            crate::toggle_auto_hide(app);
+            refresh_menu(app);
         }
         "quit" => app.exit(0),
         _ if id.starts_with("lang-") => crate::apply_lang(app, &id[5..]),

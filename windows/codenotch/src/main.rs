@@ -28,6 +28,7 @@ pub const NOTCH_W: f64 = 340.0;
 /// Hand-bumped build tag, written to run.log at startup so a log can always be matched to the exe that wrote it.
 pub const BUILD: &str = "r31";
 pub const NOTCH_H: f64 = 460.0; // 300 clipped the card once it held three window blocks plus the session list
+const HOTSPOT_W: f64 = 5.0;
 
 pub struct AppState {
     pub store: Mutex<state::Store>,
@@ -61,10 +62,13 @@ pub fn broadcast(app: &AppHandle) {
         store.snapshot(&cfg.lang, &resolved_lang(&cfg.lang), false)
     };
     let _ = app.emit("state", &snap);
+    if snap.agg == state::ST_ATTENTION {
+        reveal_attention(app);
+    }
 }
 
 /// Pins the notch to the right edge of the primary monitor; the other edges are a later milestone.
-pub fn place_notch(app: &AppHandle) {
+fn place_notch_width(app: &AppHandle, width: f64) {
     let Some(w) = app.get_webview_window("notch") else {
         return;
     };
@@ -76,7 +80,7 @@ pub fn place_notch(app: &AppHandle) {
         // So the physical size is pinned straight from mon.scale_factor() before placing the
         // window; if it still reports a different scale afterwards, it is pinned once more.
         let ms = mon.scale_factor();
-        let target = tauri::PhysicalSize::new((NOTCH_W * ms).round() as u32, (NOTCH_H * ms).round() as u32);
+        let target = tauri::PhysicalSize::new((width * ms).round() as u32, (NOTCH_H * ms).round() as u32);
         let _ = w.set_size(target);
         // Position from the window's measured physical size — deriving it from the scale factor
         // pushed the window past the right edge at 125 % / 150 % (the ring's right side was clipped).
@@ -113,6 +117,60 @@ pub fn place_notch(app: &AppHandle) {
                 mon.size().height
             ),
         );
+    }
+}
+
+pub fn place_notch(app: &AppHandle) {
+    place_notch_width(app, NOTCH_W);
+}
+
+static NOTCH_VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static ATTENTION_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn auto_hide_enabled(app: &AppHandle) -> bool {
+    app.state::<AppState>().cfg.lock().unwrap().auto_hide_notch
+}
+
+fn set_notch_visible(app: &AppHandle, visible: bool) {
+    if NOTCH_VISIBLE.swap(visible, std::sync::atomic::Ordering::Relaxed) == visible {
+        return;
+    }
+    place_notch_width(app, if visible { NOTCH_W } else { HOTSPOT_W });
+    if let Some(w) = app.get_webview_window("notch") {
+        let _ = w.show();
+    }
+    noactivate(app);
+    if !visible {
+        set_click_through(app, true);
+    }
+}
+
+pub fn reveal_attention(app: &AppHandle) {
+    if !auto_hide_enabled(app) {
+        return;
+    }
+    ATTENTION_UNTIL.store(now_ms().saturating_add(5_000), std::sync::atomic::Ordering::Relaxed);
+    set_notch_visible(app, true);
+}
+
+pub fn toggle_auto_hide(app: &AppHandle) {
+    let enabled = {
+        let st = app.state::<AppState>();
+        let mut c = st.cfg.lock().unwrap();
+        c.auto_hide_notch = !c.auto_hide_notch;
+        config::save(&c);
+        c.auto_hide_notch
+    };
+    if !enabled {
+        ATTENTION_UNTIL.store(0, std::sync::atomic::Ordering::Relaxed);
+        set_notch_visible(app, true);
     }
 }
 
@@ -464,6 +522,7 @@ const WATCHDOG_MS: u64 = 50;
 /// Kept at the original 300 ms rather than falling out of the faster poll, which would make the
 /// card twitchy.
 const LEAVE_MS: u64 = 300;
+const AUTO_HIDE_MS: u64 = 1_500;
 
 /// WebView2's mouseleave is unreliable inside a NOACTIVATE transparent window — a cursor that
 /// leaves quickly often produces no WM_MOUSELEAVE, and the card stays up. Rather than trust DOM
@@ -482,15 +541,30 @@ fn start_pointer_watchdog(app: AppHandle) {
         let mut miss = 0u8;
         // Last value pushed: this changes only when the cursor crosses an edge
         let mut click_through: Option<bool> = None;
+        let mut outside_since = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(WATCHDOG_MS));
             let Some(w) = app.get_webview_window("notch") else { continue };
             let (Ok(pos), Ok(cur)) = (w.outer_position(), app.cursor_position()) else { continue };
+            let size = w.outer_size().ok().map(|s| (s.width as f64, s.height as f64));
+            let now = now_ms();
+            let attention_until = ATTENTION_UNTIL.load(std::sync::atomic::Ordering::Relaxed);
+            let in_edge_hotspot = w.primary_monitor().ok().flatten().map(|m| {
+                let right = m.position().x + m.size().width as i32;
+                cur.x >= right - HOTSPOT_W as i32
+                    && cur.y >= pos.y
+                    && cur.y < pos.y + size.map(|(_, h)| h as i32).unwrap_or(0)
+            }).unwrap_or(false);
+            if !NOTCH_VISIBLE.load(std::sync::atomic::Ordering::Relaxed) {
+                if !auto_hide_enabled(&app) || in_edge_hotspot || attention_until > now {
+                    set_notch_visible(&app, true);
+                }
+                continue;
+            }
             let rects = HOT.lock().unwrap().clone();
             // Cursor position relative to the window's top-left, in physical pixels; the hot rectangles are physical too, so no scale conversion
             let lx = cur.x - pos.x as f64;
             let ly = cur.y - pos.y as f64;
-            let size = w.outer_size().ok().map(|s| (s.width as f64, s.height as f64));
             let inside = cursor_in_hot(&rects, lx, ly, size);
 
             if click_through != Some(!inside) {
@@ -510,18 +584,28 @@ fn start_pointer_watchdog(app: AppHandle) {
                 ));
             }
 
-            if !EXPANDED.load(std::sync::atomic::Ordering::Relaxed) {
+            if inside || EXPANDED.load(std::sync::atomic::Ordering::Relaxed) || DRAGGING.load(std::sync::atomic::Ordering::Relaxed) {
                 miss = 0;
-                continue;
-            }
-            if inside {
-                miss = 0;
+                outside_since = None;
             } else {
                 miss += 1;
                 if miss >= need {
                     miss = 0;
                     EXPANDED.store(false, std::sync::atomic::Ordering::Relaxed);
                     let _ = app.emit("pointer_left", ());
+                }
+                if auto_hide_enabled(&app) {
+                    let started = *outside_since.get_or_insert(now);
+                    let deadline = if attention_until > 0 {
+                        attention_until
+                    } else {
+                        started.saturating_add(AUTO_HIDE_MS)
+                    };
+                    if now >= deadline {
+                        ATTENTION_UNTIL.store(0, std::sync::atomic::Ordering::Relaxed);
+                        set_notch_visible(&app, false);
+                        outside_since = None;
+                    }
                 }
             }
         }
@@ -712,6 +796,9 @@ fn main() {
             noactivate(&handle);
             if let Some(w) = handle.get_webview_window("notch") {
                 let _ = w.show();
+            }
+            if auto_hide_enabled(&handle) {
+                set_notch_visible(&handle, false);
             }
             tray::setup(&handle)?;
             server::start(handle.clone(), port);

@@ -21,6 +21,9 @@ pub struct Config {
     /// Vertical position of the notch: the window centre as a fraction of the primary monitor's height (0 = top, 1 = bottom), default 0.5; saved after a drag
     #[serde(default = "default_notch_y")]
     pub notch_y: f64,
+    /// Collapse the notch until the pointer approaches the right edge.
+    #[serde(default = "default_auto_hide_notch")]
+    pub auto_hide_notch: bool,
 }
 
 fn default_notch_y() -> f64 {
@@ -34,6 +37,10 @@ fn default_lang() -> String {
     "auto".into()
 }
 
+fn default_auto_hide_notch() -> bool {
+    true
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -44,6 +51,7 @@ impl Default for Config {
             bar_w: None,
             drag_enabled: false,
             notch_y: default_notch_y(),
+            auto_hide_notch: default_auto_hide_notch(),
         }
     }
 }
