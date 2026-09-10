@@ -32,7 +32,7 @@ const ANTIGRAVITY_STALE_MS: u64 = 45_000;
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
 pub struct Activity {
-    /// Provider id other than claude: codex / cursor / gemini
+    /// Provider id other than claude: codex / cursor / gemini / opencode / ollama
     pub provider: String,
     /// busy | waiting
     pub state: String,
@@ -521,14 +521,24 @@ pub struct Presence {
     cursor: bool,
     codex: bool,
     gemini: bool,
+    opencode: bool,
+    ollama: bool,
 }
 
 fn presence() -> Presence {
-    Presence { cursor: crate::cursor::present(), codex: crate::codex::present(), gemini: crate::antigravity::present() }
+    Presence {
+        cursor: crate::cursor::present(),
+        codex: crate::codex::present(),
+        gemini: crate::antigravity::present(),
+        opencode: crate::opencode::present(),
+        ollama: crate::ollama::present(),
+    }
 }
 
-fn read_all(p: Presence, ctx: &mut Ctx) -> Vec<Activity> {
+fn read_all(p: Presence, ctx: &mut Ctx) -> (Vec<Activity>, Option<crate::usage::UsageSnapshot>, Option<crate::usage::UsageSnapshot>) {
     let mut all = Vec::new();
+    let mut opencode_snapshot = Some(crate::usage::UsageSnapshot { status: "absent".into(), ..Default::default() });
+    let mut ollama_snapshot = Some(crate::usage::UsageSnapshot { status: "absent".into(), ..Default::default() });
     all.extend(claude_activity());
     if p.cursor {
         all.extend(cursor_activity(ctx));
@@ -539,7 +549,17 @@ fn read_all(p: Presence, ctx: &mut Ctx) -> Vec<Activity> {
     if p.gemini {
         all.extend(antigravity_activity());
     }
-    all
+    if p.opencode {
+        let (snapshot, activities) = crate::opencode::probe();
+        opencode_snapshot = Some(snapshot);
+        all.extend(activities);
+    }
+    if p.ollama {
+        let (snapshot, activities) = crate::ollama::probe();
+        ollama_snapshot = Some(snapshot);
+        all.extend(activities);
+    }
+    (all, opencode_snapshot, ollama_snapshot)
 }
 
 /// For doctor: the raw material behind the Codex working-state decision
@@ -592,6 +612,8 @@ pub fn start(app: AppHandle) {
         lower_thread_priority(); // the probe always yields to foreground input
         let mut ctx = Ctx::new();
         let mut last: Vec<Activity> = Vec::new();
+        let mut last_opencode = crate::usage::UsageSnapshot::default();
+        let mut last_ollama = crate::usage::UsageSnapshot::default();
         let mut pres = presence();
         let mut tick: u32 = 0;
         loop {
@@ -600,7 +622,23 @@ pub fn start(app: AppHandle) {
                 pres = presence();
             }
             tick = tick.wrapping_add(1);
-            let found = read_all(pres, &mut ctx);
+            let (found, opencode_snapshot, ollama_snapshot) = read_all(pres, &mut ctx);
+            if let Some(snapshot) = opencode_snapshot {
+                if snapshot != last_opencode {
+                    last_opencode = snapshot.clone();
+                    let st = app.state::<AppState>();
+                    *st.opencode.lock().unwrap() = snapshot.clone();
+                    let _ = app.emit("opencode", &snapshot);
+                }
+            }
+            if let Some(snapshot) = ollama_snapshot {
+                if snapshot != last_ollama {
+                    last_ollama = snapshot.clone();
+                    let st = app.state::<AppState>();
+                    *st.ollama.lock().unwrap() = snapshot.clone();
+                    let _ = app.emit("ollama", &snapshot);
+                }
+            }
             if found != last {
                 // Log the first 20 state changes (with the Codex raw material) so thresholds can be calibrated
                 static LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

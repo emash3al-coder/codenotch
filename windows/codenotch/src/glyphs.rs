@@ -25,7 +25,7 @@ pub struct Glyph {
     pub source: String,
 }
 
-pub const IDS: [&str; 4] = ["claude", "codex", "cursor", "gemini"];
+pub const IDS: [&str; 6] = ["claude", "codex", "cursor", "gemini", "opencode", "ollama"];
 
 /// Built-in artwork (@lobehub/icons-static-svg, MIT): the OpenAI mark for codex (matching upstream's glyph choice), the Antigravity mark for gemini
 const BUILTIN: [(&str, &str); 4] = [
@@ -305,7 +305,7 @@ pub fn collect() -> HashMap<String, Glyph> {
 /// For doctor
 pub fn probe() -> String {
     let m = collect();
-    let mut lines = vec![format!("glyph directory: {} (drop claude/codex/cursor/gemini .svg or .png files here)", user_dir().display())];
+    let mut lines = vec![format!("glyph directory: {} (drop provider .svg or .png files here)", user_dir().display())];
     for id in IDS {
         lines.push(match m.get(id) {
             Some(g) => format!("  {id}: {} ← {}", g.kind, g.source),

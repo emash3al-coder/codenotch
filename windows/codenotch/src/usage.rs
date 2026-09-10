@@ -44,7 +44,7 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct LimitWindow {
     pub id: String,
     pub label: String,
@@ -60,7 +60,7 @@ pub struct LimitWindow {
     pub derived: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct UsageSnapshot {
     /// ok | stale | needsAuth | backoff | error
     pub status: String,

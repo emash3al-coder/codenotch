@@ -117,6 +117,8 @@ let usage={status:'',windows:[],fetched_at:0,note:''};
 let codexSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let cursorSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let agSnap={status:'absent',windows:[],fetched_at:0,note:''};
+let opencodeSnap={status:'absent',windows:[],fetched_at:0,note:''};
+let ollamaSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let glyphs={}; // id → {kind:'mark'|'appicon', url}
 let activity=[]; // working state of the non-Claude providers: {provider,state:'busy'|'waiting',name,detail,since}
 // "Is it working?" per provider: Claude from the four-state engine, the others from the activity probe. Returns running | attention | idle
@@ -141,8 +143,11 @@ function glyphHtml(p,small){
 }
 // Provider table (order = top to bottom in the pill). `glyph` is the fallback letter used when no mark is available
 function providers(){
-  const list=[{id:'claude',name:'Claude',glyph:'C',snap:usage}];
+  const list=[];
   if(codexSnap.status!=='absent') list.push({id:'codex',name:'Codex',glyph:'Cx',snap:codexSnap});
+  list.push({id:'claude',name:'Claude',glyph:'C',snap:usage});
+  if(opencodeSnap.status!=='absent') list.push({id:'opencode',name:'OpenCode',glyph:'Oc',snap:opencodeSnap});
+  if(ollamaSnap.status!=='absent') list.push({id:'ollama',name:'Ollama',glyph:'Ol',snap:ollamaSnap});
   if(cursorSnap.status!=='absent') list.push({id:'cursor',name:'Cursor',glyph:'Cu',snap:cursorSnap});
   if(agSnap.status!=='absent') list.push({id:'gemini',name:'Antigravity',glyph:'Ag',snap:agSnap});
   return list;
@@ -195,7 +200,8 @@ function renderRing(){
       else if(ws==='attention') inner+=`<g class="arc-pulse"><circle cx="28" cy="28" r="19" fill="none" stroke="${AMBER}" stroke-width="2.5"/></g>`;
     }
     svg.innerHTML=inner;
-    if(p.snap.status==='needsAuth'||p.snap.status==='none') pct.textContent='—';
+    if(p.id==='opencode'||p.id==='ollama') pct.textContent=workState(p.id)==='running'?'Run':'Idle';
+    else if(p.snap.status==='needsAuth'||p.snap.status==='none') pct.textContent='—';
     else if(h && h.count!=null) pct.textContent='~'+h.count;
     else if(h) pct.textContent=(h.derived?'~':'')+Math.round(h.used*100)+'%';
     else pct.textContent='…';
@@ -229,7 +235,8 @@ function renderCard(){
   const p=providers().find(x=>x.id===hoverId)||providers()[0];
   const snap=p.snap;
   const headIcon=glyphHtml(p,true);
-  let html=`<div class="c-head">${headIcon}<span class="c-title">${p.name} Usage</span></div>`;
+  const noQuota=p.id==='opencode'||p.id==='ollama';
+  let html=`<div class="c-head">${headIcon}<span class="c-title">${p.name}${noQuota?'':' Usage'}</span></div>`;
   if(staleOf(snap)&&snap.fetched_at) html+=`<div class="c-sub">Updated ${ago(snap.fetched_at)}</div>`;
   if(snap.status==='needsAuth'){
     const who={claude:'Sign in to Claude Code to see usage.',cursor:'Sign in to Cursor to see usage.',codex:'Sign in to Codex to see usage.',gemini:'Sign in to Antigravity to see usage.'}[p.id]||'';
@@ -396,6 +403,10 @@ listen('cursor',e=>{cursorSnap=e.payload||cursorSnap;renderRing();if(card.classL
 invoke('get_cursor').then(u=>{cursorSnap=u||cursorSnap;renderRing();}).catch(()=>{});
 listen('antigravity',e=>{agSnap=e.payload||agSnap;renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
 invoke('get_antigravity').then(u=>{agSnap=u||agSnap;renderRing();}).catch(()=>{});
+listen('opencode',e=>{opencodeSnap=e.payload||opencodeSnap;renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
+invoke('get_opencode').then(u=>{opencodeSnap=u||opencodeSnap;renderRing();}).catch(()=>{});
+listen('ollama',e=>{ollamaSnap=e.payload||ollamaSnap;renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
+invoke('get_ollama').then(u=>{ollamaSnap=u||ollamaSnap;renderRing();}).catch(()=>{});
 listen('glyphs',e=>{glyphs=e.payload||glyphs;renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
 listen('activity',e=>{activity=e.payload||activity;renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
 invoke('get_activity').then(a=>{activity=a||activity;renderRing();}).catch(()=>{});

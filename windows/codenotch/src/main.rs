@@ -13,6 +13,8 @@ mod usage;
 mod codex;
 mod cursor;
 mod antigravity;
+mod opencode;
+mod ollama;
 mod glyphs;
 mod activity;
 mod diag;
@@ -35,6 +37,8 @@ pub struct AppState {
     pub codex: Mutex<usage::UsageSnapshot>,
     pub cursor: Mutex<usage::UsageSnapshot>,
     pub antigravity: Mutex<usage::UsageSnapshot>,
+    pub opencode: Mutex<usage::UsageSnapshot>,
+    pub ollama: Mutex<usage::UsageSnapshot>,
     /// Provider glyph cache, collected at launch and again on a tray refresh
     pub glyphs: Mutex<std::collections::HashMap<String, glyphs::Glyph>>,
     /// Working state of the non-Claude providers (Cursor reports it; Codex and Antigravity are inferred from recent writes)
@@ -268,6 +272,16 @@ fn get_antigravity(state: tauri::State<AppState>) -> usage::UsageSnapshot {
 }
 
 #[tauri::command]
+fn get_opencode(state: tauri::State<AppState>) -> usage::UsageSnapshot {
+    state.opencode.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn get_ollama(state: tauri::State<AppState>) -> usage::UsageSnapshot {
+    state.ollama.lock().unwrap().clone()
+}
+
+#[tauri::command]
 fn get_activity(state: tauri::State<AppState>) -> Vec<activity::Activity> {
     state.activity.lock().unwrap().clone()
 }
@@ -316,6 +330,8 @@ fn open_provider_page(provider: String) {
         "codex" => "https://chatgpt.com/#settings/Account",
         "cursor" => "https://cursor.com/dashboard",
         "gemini" => "https://antigravity.google",
+        "opencode" => "https://opencode.ai",
+        "ollama" => "https://ollama.com",
         _ => "https://claude.ai/settings/usage",
     };
     let mut cmd = std::process::Command::new("cmd");
@@ -663,6 +679,8 @@ fn main() {
             codex: Mutex::new(codex::load_persisted()),
             cursor: Mutex::new(cursor::load_persisted()),
             antigravity: Mutex::new(antigravity::load_persisted()),
+            opencode: Mutex::new(usage::UsageSnapshot { status: "absent".into(), ..Default::default() }),
+            ollama: Mutex::new(usage::UsageSnapshot { status: "absent".into(), ..Default::default() }),
             glyphs: Mutex::new(Default::default()),
             activity: Mutex::new(Vec::new()),
         })
@@ -672,6 +690,8 @@ fn main() {
             get_codex,
             get_cursor,
             get_antigravity,
+            get_opencode,
+            get_ollama,
             get_glyphs,
             get_activity,
             open_data_dir,
