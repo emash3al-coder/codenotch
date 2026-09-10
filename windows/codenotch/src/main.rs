@@ -550,10 +550,10 @@ fn start_pointer_watchdog(app: AppHandle) {
             let now = now_ms();
             let attention_until = ATTENTION_UNTIL.load(std::sync::atomic::Ordering::Relaxed);
             let in_edge_hotspot = w.primary_monitor().ok().flatten().map(|m| {
-                let right = m.position().x + m.size().width as i32;
-                cur.x >= right - HOTSPOT_W as i32
-                    && cur.y >= pos.y
-                    && cur.y < pos.y + size.map(|(_, h)| h as i32).unwrap_or(0)
+                let right = m.position().x as f64 + m.size().width as f64;
+                cur.x >= right - HOTSPOT_W
+                    && cur.y >= pos.y as f64
+                    && cur.y < pos.y as f64 + size.map(|(_, h)| h).unwrap_or(0.0)
             }).unwrap_or(false);
             if !NOTCH_VISIBLE.load(std::sync::atomic::Ordering::Relaxed) {
                 if !auto_hide_enabled(&app) || in_edge_hotspot || attention_until > now {
