@@ -1,23 +1,23 @@
 #![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 
+mod activity;
+mod antigravity;
 mod autostart;
+mod codex;
 mod config;
+mod cursor;
+mod diag;
 mod doctor;
 mod focus;
+mod glyphs;
 mod hooks_install;
 mod i18n;
+mod ollama;
+mod opencode;
 mod server;
 mod state;
 mod tray;
 mod usage;
-mod codex;
-mod cursor;
-mod antigravity;
-mod opencode;
-mod ollama;
-mod glyphs;
-mod activity;
-mod diag;
 mod watcher;
 
 use std::sync::Mutex;
@@ -80,7 +80,8 @@ fn place_notch_width(app: &AppHandle, width: f64) {
         // So the physical size is pinned straight from mon.scale_factor() before placing the
         // window; if it still reports a different scale afterwards, it is pinned once more.
         let ms = mon.scale_factor();
-        let target = tauri::PhysicalSize::new((width * ms).round() as u32, (NOTCH_H * ms).round() as u32);
+        let target =
+            tauri::PhysicalSize::new((width * ms).round() as u32, (NOTCH_H * ms).round() as u32);
         let _ = w.set_size(target);
         // Position from the window's measured physical size — deriving it from the scale factor
         // pushed the window past the right edge at 125 % / 150 % (the ring's right side was clipped).
@@ -88,7 +89,7 @@ fn place_notch_width(app: &AppHandle, width: f64) {
             .outer_size()
             .map(|s| (s.width as i32, s.height as i32))
             .unwrap_or(((NOTCH_W * scale) as i32, (NOTCH_H * scale) as i32));
-        let x = mon.position().x + mon.size().width as i32 - ww;
+        let x = notch_x_positions(mon.position().x, mon.size().width, ww).0;
         // Vertical position comes from the configured ratio (the pill can be dragged; it persists), clamped to the monitor
         let ratio = {
             let st = app.state::<AppState>();
@@ -99,9 +100,12 @@ fn place_notch_width(app: &AppHandle, width: f64) {
         let y = (mon.position().y as f64 + mh as f64 * ratio - wh as f64 / 2.0).round() as i32;
         let y = y.clamp(mon.position().y, mon.position().y + (mh - wh).max(0));
         let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
-        if w.outer_size().map(|s| s.width != target.width).unwrap_or(false) {
+        if w.outer_size()
+            .map(|s| s.width != target.width)
+            .unwrap_or(false)
+        {
             let _ = w.set_size(target);
-            let x = mon.position().x + mon.size().width as i32 - target.width as i32;
+            let x = notch_x_positions(mon.position().x, mon.size().width, target.width as i32).0;
             let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
         }
         // Placement log line: the first thing to check when the notch is not visible
@@ -122,6 +126,44 @@ fn place_notch_width(app: &AppHandle, width: f64) {
 
 pub fn place_notch(app: &AppHandle) {
     place_notch_width(app, NOTCH_W);
+    if !NOTCH_VISIBLE.load(std::sync::atomic::Ordering::Relaxed) {
+        position_notch(app, true);
+    }
+}
+
+/// Return the normal and hidden X coordinates from the monitor's physical right edge.
+fn notch_x_positions(monitor_x: i32, monitor_width: u32, window_width: i32) -> (i32, i32) {
+    let right = monitor_x + monitor_width as i32;
+    (right - window_width, right - HOTSPOT_W.round() as i32)
+}
+
+/// Move the already-sized notch without changing its WebView surface. Hidden mode leaves only a
+/// small strip at the monitor's right edge so the global watchdog can still reveal it.
+fn position_notch(app: &AppHandle, hidden: bool) {
+    let Some(w) = app.get_webview_window("notch") else {
+        return;
+    };
+    let Ok(Some(mon)) = w.primary_monitor() else {
+        return;
+    };
+    let Ok(size) = w.outer_size() else {
+        return;
+    };
+    let (visible_x, hidden_x) =
+        notch_x_positions(mon.position().x, mon.size().width, size.width as i32);
+    let x = if hidden { hidden_x } else { visible_x };
+    let ratio = {
+        let st = app.state::<AppState>();
+        let c = st.cfg.lock().unwrap();
+        c.notch_y.clamp(0.0, 1.0)
+    };
+    let mh = mon.size().height as i32;
+    let y = (mon.position().y as f64 + mh as f64 * ratio - size.height as f64 / 2.0).round() as i32;
+    let y = y.clamp(
+        mon.position().y,
+        mon.position().y + (mh - size.height as i32).max(0),
+    );
+    let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
 static NOTCH_VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
@@ -142,12 +184,13 @@ fn set_notch_visible(app: &AppHandle, visible: bool) {
     if NOTCH_VISIBLE.swap(visible, std::sync::atomic::Ordering::Relaxed) == visible {
         return;
     }
-    place_notch_width(app, if visible { NOTCH_W } else { HOTSPOT_W });
+    position_notch(app, !visible);
     if let Some(w) = app.get_webview_window("notch") {
         let _ = w.show();
     }
     noactivate(app);
     if !visible {
+        applog("auto-hide: hidden");
         set_click_through(app, true);
     }
 }
@@ -156,7 +199,11 @@ pub fn reveal_attention(app: &AppHandle) {
     if !auto_hide_enabled(app) {
         return;
     }
-    ATTENTION_UNTIL.store(now_ms().saturating_add(5_000), std::sync::atomic::Ordering::Relaxed);
+    ATTENTION_UNTIL.store(
+        now_ms().saturating_add(5_000),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    applog("auto-hide: revealed attention");
     set_notch_visible(app, true);
 }
 
@@ -171,6 +218,9 @@ pub fn toggle_auto_hide(app: &AppHandle) {
     if !enabled {
         ATTENTION_UNTIL.store(0, std::sync::atomic::Ordering::Relaxed);
         set_notch_visible(app, true);
+        position_notch(app, false);
+        set_click_through(app, false);
+        applog("auto-hide: disabled visible");
     }
 }
 
@@ -211,9 +261,12 @@ fn drag_begin(app: AppHandle) {
             DRAGGING.store(false, std::sync::atomic::Ordering::SeqCst);
             return;
         };
-        let (Ok(start_cur), Ok(start_pos), Ok(size), Ok(Some(mon))) =
-            (app.cursor_position(), w.outer_position(), w.outer_size(), w.primary_monitor())
-        else {
+        let (Ok(start_cur), Ok(start_pos), Ok(size), Ok(Some(mon))) = (
+            app.cursor_position(),
+            w.outer_position(),
+            w.outer_size(),
+            w.primary_monitor(),
+        ) else {
             DRAGGING.store(false, std::sync::atomic::Ordering::SeqCst);
             return;
         };
@@ -282,8 +335,7 @@ fn noactivate(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("notch") {
         if let Ok(h) = w.hwnd() {
             unsafe {
-                let hwnd =
-                    windows::Win32::Foundation::HWND(h.0 as isize as *mut core::ffi::c_void);
+                let hwnd = windows::Win32::Foundation::HWND(h.0 as isize as *mut core::ffi::c_void);
                 let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
                 SetWindowLongPtrW(
                     hwnd,
@@ -359,7 +411,10 @@ pub fn reload_glyphs(app: &AppHandle) {
 
 #[tauri::command]
 fn open_data_dir() {
-    let dir = config::config_path().parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let dir = config::config_path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
     let _ = std::fs::create_dir_all(glyphs::user_dir());
     let mut cmd = std::process::Command::new("explorer");
     cmd.arg(dir.as_os_str());
@@ -427,7 +482,9 @@ fn set_hot(rects: Vec<[f64; 4]>, expanded: bool) {
 /// that sets both is the only route. Clearing it again is safe — the notch is not otherwise layered
 /// (its transparency is DWM composition), so the window returns to the styles it had.
 fn set_click_through(app: &AppHandle, on: bool) {
-    let Some(w) = app.get_webview_window("notch") else { return };
+    let Some(w) = app.get_webview_window("notch") else {
+        return;
+    };
     let _ = w.set_ignore_cursor_events(on);
 }
 
@@ -437,7 +494,11 @@ static ZOOM: Mutex<f64> = Mutex::new(1.0);
 pub fn applog(line: &str) {
     use std::io::Write;
     let log = config::config_path().with_file_name("run.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+    {
         let _ = writeln!(f, "{line}");
     }
 }
@@ -449,7 +510,9 @@ pub fn applog(line: &str) {
 /// scale, set_zoom pulls the effective DPR back to that scale, restoring the 340 px width.
 #[tauri::command]
 fn report_dpr(app: AppHandle, dpr: f64, w: f64, h: f64) {
-    let Some(win) = app.get_webview_window("notch") else { return };
+    let Some(win) = app.get_webview_window("notch") else {
+        return;
+    };
     let want = win
         .primary_monitor()
         .ok()
@@ -544,19 +607,37 @@ fn start_pointer_watchdog(app: AppHandle) {
         let mut outside_since = None;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(WATCHDOG_MS));
-            let Some(w) = app.get_webview_window("notch") else { continue };
-            let (Ok(pos), Ok(cur)) = (w.outer_position(), app.cursor_position()) else { continue };
-            let size = w.outer_size().ok().map(|s| (s.width as f64, s.height as f64));
+            let Some(w) = app.get_webview_window("notch") else {
+                continue;
+            };
+            let (Ok(pos), Ok(cur)) = (w.outer_position(), app.cursor_position()) else {
+                continue;
+            };
+            let size = w
+                .outer_size()
+                .ok()
+                .map(|s| (s.width as f64, s.height as f64));
             let now = now_ms();
             let attention_until = ATTENTION_UNTIL.load(std::sync::atomic::Ordering::Relaxed);
-            let in_edge_hotspot = w.primary_monitor().ok().flatten().map(|m| {
-                let right = m.position().x as f64 + m.size().width as f64;
-                cur.x >= right - HOTSPOT_W
-                    && cur.y >= pos.y as f64
-                    && cur.y < pos.y as f64 + size.map(|(_, h)| h).unwrap_or(0.0)
-            }).unwrap_or(false);
+            let in_edge_hotspot = w
+                .primary_monitor()
+                .ok()
+                .flatten()
+                .map(|m| {
+                    let right = m.position().x as f64 + m.size().width as f64;
+                    cur.x >= right - HOTSPOT_W
+                        && cur.y >= pos.y as f64
+                        && cur.y < pos.y as f64 + size.map(|(_, h)| h).unwrap_or(0.0)
+                })
+                .unwrap_or(false);
             if !NOTCH_VISIBLE.load(std::sync::atomic::Ordering::Relaxed) {
-                if !auto_hide_enabled(&app) || in_edge_hotspot || attention_until > now {
+                if !auto_hide_enabled(&app) {
+                    set_notch_visible(&app, true);
+                } else if attention_until > now {
+                    applog("auto-hide: revealed attention");
+                    set_notch_visible(&app, true);
+                } else if in_edge_hotspot {
+                    applog("auto-hide: revealed edge");
                     set_notch_visible(&app, true);
                 }
                 continue;
@@ -572,7 +653,11 @@ fn start_pointer_watchdog(app: AppHandle) {
                 click_through = Some(!inside);
                 applog(&format!(
                     "click-through {} at cursor_rel=({lx:.0},{ly:.0}) rects={rects:?}",
-                    if inside { "off (cursor on the notch)" } else { "on (cursor elsewhere)" }
+                    if inside {
+                        "off (cursor on the notch)"
+                    } else {
+                        "on (cursor elsewhere)"
+                    }
                 ));
             }
 
@@ -584,7 +669,10 @@ fn start_pointer_watchdog(app: AppHandle) {
                 ));
             }
 
-            if inside || EXPANDED.load(std::sync::atomic::Ordering::Relaxed) || DRAGGING.load(std::sync::atomic::Ordering::Relaxed) {
+            if inside
+                || EXPANDED.load(std::sync::atomic::Ordering::Relaxed)
+                || DRAGGING.load(std::sync::atomic::Ordering::Relaxed)
+            {
                 miss = 0;
                 outside_since = None;
             } else {
@@ -615,7 +703,10 @@ fn start_pointer_watchdog(app: AppHandle) {
 /// Log channel for the page: JS writes key diagnostics into run.log (if invoke itself fails, the page reports on screen instead)
 #[tauri::command]
 fn log_js(msg: String) {
-    applog(&format!("js: {}", msg.chars().take(600).collect::<String>()));
+    applog(&format!(
+        "js: {}",
+        msg.chars().take(600).collect::<String>()
+    ));
 }
 
 #[tauri::command]
@@ -736,7 +827,11 @@ fn main() {
                 return;
             }
             "doctor" => {
-                let out = if args.get(2).map(|s| s.as_str()) == Some("deep") { diag::run() } else { doctor::run() };
+                let out = if args.get(2).map(|s| s.as_str()) == Some("deep") {
+                    diag::run()
+                } else {
+                    doctor::run()
+                };
                 println!("{out}");
                 let log = config::config_path().with_file_name("doctor.log");
                 let _ = std::fs::write(log, &out);
@@ -905,8 +1000,18 @@ mod tests {
 
     #[test]
     fn the_pad_reaches_slightly_past_the_pill() {
-        assert!(cursor_in_hot(&[PILL], PILL[0] - HOT_PAD + 1.0, 300.0, WINDOW));
-        assert!(!cursor_in_hot(&[PILL], PILL[0] - HOT_PAD - 1.0, 300.0, WINDOW));
+        assert!(cursor_in_hot(
+            &[PILL],
+            PILL[0] - HOT_PAD + 1.0,
+            300.0,
+            WINDOW
+        ));
+        assert!(!cursor_in_hot(
+            &[PILL],
+            PILL[0] - HOT_PAD - 1.0,
+            300.0,
+            WINDOW
+        ));
     }
 
     #[test]
